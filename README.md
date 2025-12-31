@@ -1,4 +1,6 @@
-## How to run Milestone 2
+## Milestone 2
+
+See `docs/milestone2_readme.md` for the final Milestone 2 submission writeup, outputs, and traceability.
 
 ## Run pipeline
 python scripts/download_raw.py

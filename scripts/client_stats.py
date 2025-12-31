@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-CLIENTS_DIR = r"data\processed\clients"
-OUT_DIR = r"md\figures"
-SUMMARY_MD = r"md\client_stats_summary.md"
+CLIENTS_DIR = os.path.join("data", "processed", "clients")
+OUT_DIR = os.path.join("md", "figures")
+SUMMARY_MD = os.path.join("md", "client_stats_summary.md")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 

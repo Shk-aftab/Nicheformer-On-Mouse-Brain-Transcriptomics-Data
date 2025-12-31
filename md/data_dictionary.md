@@ -20,7 +20,7 @@ To maintain consistency across the pipeline, use the following mapping from the 
 | Contract Field | Raw Column Name | Type | Description |
 | :--- | :--- | :--- | :--- |
 | **sample_id** | `library_key` | category | **Primary Split Axis.** Each unique key is a federated client. |
-| **label** | `niche` | category | Target labels for fine-tuning (e.g., "Cortex_L2", "Hippocampus"). |
+| **label** | derived (`cluster`) | category | Pseudo-labels created via Leiden clustering during preprocessing. |
 | **x** | `x` | float32 | Spatial X-coordinate (centroid). |
 | **y** | `y` | float32 | Spatial Y-coordinate (centroid). |
 | **donor_id** | `donor_id` | category | Biological source identifier. |
@@ -48,12 +48,11 @@ Based on the validation of the raw Xenium data, please follow these requirements
 - Verify if `adata.X` contains integers (raw) or floats (normalized) before applying.
 
 ### C. Label Standardization (`label_map.json`)
-- The `niche` column contains the ground-truth labels.
-- **Task:** Create a consistent `label_map.json` that maps these string labels to integers (0, 1, 2...). 
+- Labels are generated during preprocessing as Leiden cluster IDs (stored in `adata.obs["cluster"]`).
+- **Task:** Create a consistent `label_map.json` that maps these cluster IDs (strings) to integers (0, 1, 2...). 
 - **Important:** This map must be applied globally to all clients so that "Client A's" Label 0 is the same as "Client B's" Label 0.
 
 ### D. File Outputs
 - **`processed_table.parquet`**: Should contain `id`, `sample_id` (from `library_key`), `x`, `y`, `label` (int), and the 248 gene columns.
 - **`genes.txt`**: A line-separated file of the 248 genes in the exact order used in the parquet columns.
-- **`label_map.json`**: The dictionary used for encoding the `niche` labels.
-
+- **`label_map.json`**: The dictionary used for encoding the Leiden cluster pseudo-labels.

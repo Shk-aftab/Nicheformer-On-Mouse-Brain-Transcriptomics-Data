@@ -2,8 +2,8 @@ import os, json
 import numpy as np
 import pandas as pd
 
-IN_PATH = r"data\processed\processed_table.parquet"
-OUT_DIR = r"data\processed\clients"
+IN_PATH = os.path.join("data", "processed", "processed_table.parquet")
+OUT_DIR = os.path.join("data", "processed", "clients")
 LABEL_COL = "label"
 CLIENT_COL = "sample_id"
 SPLIT = (0.8, 0.1, 0.1)
@@ -53,7 +53,7 @@ for i, (client_id, cdf) in enumerate(df.groupby(CLIENT_COL), start=1):
 
     global_meta[client_name] = meta
 
-with open(r"data\processed\global_metadata.json", "w") as f:
+with open(os.path.join("data", "processed", "global_metadata.json"), "w") as f:
     json.dump(global_meta, f, indent=2)
 
 print(f"Saved {len(global_meta)} clients to {OUT_DIR}")
