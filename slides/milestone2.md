@@ -35,22 +35,22 @@
 - Global summary: `data/processed/global_metadata.json`
 
 ## Client sizes
-![](../md/figures/client_sizes.png)
+![](../outputs/milestone2/figures/client_sizes.png)
 
 ## Global label distribution
-![](../md/figures/global_label_distribution.png)
+![](../outputs/milestone2/figures/global_label_distribution.png)
 
 ## Per-client label distribution
-![](../md/figures/per_client_label_distribution.png)
+![](../outputs/milestone2/figures/per_client_label_distribution.png)
 
 ## Within-client imbalance
-![](../md/figures/client_imbalance_max_fraction.png)
+![](../outputs/milestone2/figures/client_imbalance_max_fraction.png)
 
 ## Non-IID severity (JSD to global)
-![](../md/figures/client_jsd_to_global.png)
+![](../outputs/milestone2/figures/client_jsd_to_global.png)
 
 ## Spatial clusters (pseudo-labels)
-![](../md/figures/spatial_clusters.png)
+![](../outputs/milestone2/figures/spatial_clusters.png)
 
 ## Key takeaways
 - Clients are balanced in size
@@ -60,10 +60,10 @@
 
 ## Reproducibility
 ```bash
-python scripts/download_raw.py
-python scripts/validate_raw.py
-python scripts/preprocess.py
-python scripts/partition_clients.py
+python scripts/data_preparation/download_raw.py
+python scripts/data_preparation/validate_raw.py
+python scripts/data_preparation/preprocess.py
+python scripts/data_preparation/partition_clients.py
 python scripts/client_stats.py
 ```
 

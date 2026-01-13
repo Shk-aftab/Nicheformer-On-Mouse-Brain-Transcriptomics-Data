@@ -5,10 +5,19 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
 
 # Virtual environments
 .venv
+env/
+ENV/
 
 # Data files (too large for git)
 data/raw/*.h5ad
-data/raw/*.json
+data/processed/**/*.parquet
+
+# Outputs (keep structure, ignore contents)
+outputs/**/*
+!outputs/.gitkeep
+!outputs/milestone2/.gitkeep
+!outputs/milestone3/.gitkeep
