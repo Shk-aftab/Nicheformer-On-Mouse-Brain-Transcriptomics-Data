@@ -10,18 +10,46 @@ X_COL, Y_COL = "x", "y"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 print("Loading data...")
+# Load data
 adata = sc.read_h5ad(RAW_PATH)
+print(f"Loaded: {adata.n_obs} cells, {adata.n_vars} genes")
 
 # -----------------------------
-# 1) Basic filtering (safe)
+# 1) Basic filtering (safe) - skip if memory issues
 # -----------------------------
-sc.pp.filter_cells(adata, min_counts=10)
+print("Filtering cells (min_counts=10)...")
+try:
+    sc.pp.filter_cells(adata, min_counts=10, inplace=True)
+    print(f"After filtering: {adata.n_obs} cells")
+except (MemoryError, Exception) as e:
+    print(f"[WARNING] Error during filtering ({type(e).__name__}), skipping filter step")
+    print("Proceeding with all cells")
 
 # -----------------------------
 # 2) Normalize + log1p
 # -----------------------------
-sc.pp.normalize_total(adata, target_sum=1e4)
-sc.pp.log1p(adata)
+print("Normalizing data...")
+try:
+    # Use inplace operations to save memory
+    sc.pp.normalize_total(adata, target_sum=1e4, inplace=True)
+    sc.pp.log1p(adata, copy=False)
+    print("Normalization complete")
+except (MemoryError, Exception) as e:
+    print(f"[ERROR] Error during normalization: {type(e).__name__}: {e}")
+    print("Trying alternative approach: converting to dense array first...")
+    try:
+        # Last resort: convert to dense (uses more memory but avoids sparse ops)
+        import gc
+        gc.collect()
+        if hasattr(adata.X, 'toarray'):
+            print("Converting to dense array (this will use more memory)...")
+            adata.X = adata.X.toarray()
+        sc.pp.normalize_total(adata, target_sum=1e4, inplace=True)
+        sc.pp.log1p(adata, copy=False)
+        print("Normalization complete (using dense array)")
+    except Exception as e2:
+        print(f"[FATAL] Could not normalize data: {e2}")
+        raise
 
 # -----------------------------
 # 3) PCA + neighborhood graph
