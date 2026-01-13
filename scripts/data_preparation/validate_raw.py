@@ -8,7 +8,7 @@ RAW_PATH = "data/raw/10xgenomics_xenium_mouse_brain_replicates.h5ad"
 
 def validate_dataset():
     if not os.path.exists(RAW_PATH):
-        print(f"❌ Error: {RAW_PATH} not found.")
+        print(f"[ERROR] {RAW_PATH} not found.")
         return
 
     print(f"--- Validating Xenium Mouse Brain Replicates ---")
@@ -39,7 +39,7 @@ def validate_dataset():
     }
 
     # --- Print Professional Output for Team ---
-    print("\n✅ DATASET VALIDATION PASSED")
+    print("\n[OK] DATASET VALIDATION PASSED")
     print(f"Total Cells: {stats['n_cells']}")
     print(f"Total Genes: {stats['n_genes']}")
     print(f"Target Labels: {mapping['label_source']} ({stats['n_classes']} classes)")
@@ -50,15 +50,15 @@ def validate_dataset():
         print(f"  - Client ID: {client}")
 
     if missing:
-        print(f"⚠️ WARNING: Missing columns: {missing}")
+        print(f"[WARNING] Missing columns: {missing}")
     else:
-        print("\n✨ All columns required by the Data Contract are present.")
+        print("\n[OK] All columns required by the Data Contract are present.")
 
     # 3. Save Clean Deliverable
     os.makedirs("data/raw", exist_ok=True)
     with open("data/raw/basic_stats.json", "w") as f:
         json.dump(stats, f, indent=4)
-    print("\n📄 Basic dataset stats saved to data/raw/basic_stats.json")
+    print("\n[INFO] Basic dataset stats saved to data/raw/basic_stats.json")
 
 if __name__ == "__main__":
     validate_dataset()
