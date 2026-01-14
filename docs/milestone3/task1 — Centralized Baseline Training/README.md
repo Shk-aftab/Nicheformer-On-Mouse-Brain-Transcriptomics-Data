@@ -204,7 +204,9 @@ After a successful run, the `--output_dir` will contain:
 
 ## 6. Implementation Details & Fixes
 
-The following changes were implemented in the wrapper and integration code to ensure stability with the official NicheFormer weights.
+Aftab’s responsibility: make the “real NicheFormer + weights” path possible (wrapper + checkpoint loading).
+
+I updated the wrapper/integration so pretrained fine-tuning is real, stable, and consistent
 
 ### Fix 1: Backbone Output vs. Classifier Dimension Alignment
 
