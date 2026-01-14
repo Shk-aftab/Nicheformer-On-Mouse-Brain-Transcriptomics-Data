@@ -1,30 +1,36 @@
 """
-Nicheformer Model Wrapper - Milestone 3
+Nicheformer Model Wrapper - Milestone 3 (stabilized pretrained fine-tuning)
 
-Wraps the Nicheformer model to provide a clean, standardized interface
-for centralized and federated training.
+Key fixes:
+1) Always create an input adapter in __init__ so it is part of model.parameters()
+   BEFORE the optimizer is created (no "created during forward" params).
+2) Infer backbone embedding dim from the loaded Nicheformer encoder and build the
+   classifier to match it (prevents 256 vs 512 mismatch).
+3) Provide parameter groups so backbone LR can be smaller than head/adapter LR.
+4) Add basic spatial scaling to avoid huge coordinate magnitudes destabilizing training.
 
 Contract Reference: docs/milestone3/contracts/model_contract.md
 """
 
+from __future__ import annotations
+
+import inspect
+import os
+from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Tuple, List
-import os
 
 
 class NicheformerWrapper(nn.Module):
     """
     Wrapper for Nicheformer model that implements the Model Contract interface.
-    
-    This wrapper provides:
-    - forward(batch) -> logits
-    - compute_loss(logits, labels) -> scalar
-    - get_weights() -> state_dict
-    - set_weights(state_dict)
-    - Configurable fine-tuning modes (head-only, partial, full)
+
+    forward(batch_dict) -> logits
+    compute_loss(logits, labels) -> loss
+    get_weights() / set_weights()
     """
-    
+
     def __init__(
         self,
         num_genes: int,
@@ -32,300 +38,286 @@ class NicheformerWrapper(nn.Module):
         pretrained_path: Optional[str] = None,
         fine_tune_mode: str = "head_only",
         include_spatial: bool = True,
-        hidden_dim: int = 256,
-        num_layers: int = 4,
-        dropout: float = 0.1
+        hidden_dim: int = 256,           # used only for placeholder/new model
+        num_layers: int = 4,             # used only for placeholder/new model
+        dropout: float = 0.1,
+        spatial_scale: float = 1000.0,   # divide x,y by this when include_spatial=True
+        backbone_lr_mult: float = 0.1,   # backbone lr = base_lr * this (for partial/full)
     ):
-        """
-        Initialize Nicheformer wrapper.
-        
-        Args:
-            num_genes: Number of input genes (248 for Xenium)
-            num_labels: Number of output classes (22 for Leiden clusters)
-            pretrained_path: Path to pretrained Nicheformer weights (optional)
-            fine_tune_mode: One of "head_only", "partial", "full"
-            include_spatial: Whether to include spatial coordinates (x, y) in input
-            hidden_dim: Hidden dimension for model (if not using pretrained)
-            num_layers: Number of transformer layers (if not using pretrained)
-            dropout: Dropout rate
-        """
         super().__init__()
-        
+
         self.num_genes = num_genes
         self.num_labels = num_labels
         self.fine_tune_mode = fine_tune_mode
         self.include_spatial = include_spatial
-        
-        # Input dimension: genes + optionally spatial coords (x, y)
-        input_dim = num_genes + (2 if include_spatial else 0)
-        
-        # Try to load pretrained Nicheformer if available
-        self.backbone = self._load_backbone(pretrained_path, input_dim, hidden_dim, num_layers)
-        
-        # Track if we're using actual Nicheformer
-        self._using_nicheformer = getattr(self, '_using_nicheformer', False)
-        
-        # Classification head
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, num_labels)
+        self.spatial_scale = spatial_scale
+        self.backbone_lr_mult = backbone_lr_mult
+
+        # Input dimension: genes (+ optional x,y)
+        self.input_dim = num_genes + (2 if include_spatial else 0)
+
+        # Load backbone (real Nicheformer encoder if checkpoint is provided)
+        self.backbone, self._using_nicheformer = self._load_backbone(
+            pretrained_path=pretrained_path,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
         )
-        
-        # Configure fine-tuning mode
-        self._configure_fine_tuning()
-        
-        # Loss function
+
+        # Infer backbone embedding dimension
+        self.backbone_dim = self._infer_backbone_dim(self.backbone, default=hidden_dim)
+
+        # Adapter maps our continuous features -> backbone embedding space
+        # (created up-front so optimizer sees it)
+        self.input_adapter = nn.Sequential(
+            nn.LayerNorm(self.input_dim),
+            nn.Linear(self.input_dim, self.backbone_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
+        # Optional stabilization after backbone
+        self.post_backbone_norm = nn.LayerNorm(self.backbone_dim)
+
+        # Classification head (matches backbone_dim)
+        self.classifier = nn.Sequential(
+            nn.Linear(self.backbone_dim, self.backbone_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.backbone_dim // 2, num_labels),
+        )
+
         self.criterion = nn.CrossEntropyLoss()
-    
-    def _load_backbone(self, pretrained_path: Optional[str], input_dim: int, hidden_dim: int, num_layers: int) -> nn.Module:
+
+        # Configure which params are trainable
+        self._configure_fine_tuning()
+
+    # -------------------------
+    # Backbone loading / creation
+    # -------------------------
+
+    def _load_backbone(
+        self,
+        pretrained_path: Optional[str],
+        hidden_dim: int,
+        num_layers: int,
+    ) -> Tuple[nn.Module, bool]:
         """
-        Load Nicheformer backbone or create a simple transformer-based backbone.
-        
-        If pretrained Nicheformer is available, use it. Otherwise, create a simple
-        transformer encoder as a placeholder.
-        
-        Args:
-            pretrained_path: Path to pretrained Nicheformer checkpoint (.ckpt file)
-            input_dim: Input dimension (genes + spatial coords)
-            hidden_dim: Hidden dimension for model
-            num_layers: Number of transformer layers
-            
-        Returns:
-            Backbone model (Nicheformer or placeholder)
+        Try loading the real Nicheformer checkpoint.
+        Fall back to a lightweight placeholder transformer encoder.
         """
-        # Try to load actual Nicheformer if available
         try:
-            import nicheformer
-            from nicheformer.models import Nicheformer
-            import pytorch_lightning as pl
-            
+            import nicheformer  # noqa: F401
+            from nicheformer.models import Nicheformer  # type: ignore
+
             if pretrained_path and os.path.exists(pretrained_path):
                 print(f"Loading pretrained Nicheformer from {pretrained_path}")
-                # Load pretrained Nicheformer model
-                nicheformer_model = Nicheformer.load_from_checkpoint(pretrained_path)
-                # Extract the transformer encoder backbone
-                backbone = nicheformer_model.encoder
-                # Store embeddings for later use if needed
-                self._nicheformer_embeddings = nicheformer_model.embeddings
-                self._nicheformer_pos_embedding = nicheformer_model.positional_embedding
-                self._nicheformer_dropout = getattr(nicheformer_model, 'dropout', None)
-                self._nicheformer_pos = getattr(nicheformer_model, 'pos', None)
-                self._using_nicheformer = True
+                # Lightning checkpoint
+                nf = Nicheformer.load_from_checkpoint(pretrained_path, map_location="cpu")
                 print("Successfully loaded Nicheformer backbone")
-                return backbone
-            else:
-                # Create new Nicheformer model (without pretrained weights)
-                print("Creating new Nicheformer model (no pretrained weights)")
-                # Use default Nicheformer hyperparameters
-                nicheformer_model = Nicheformer(
-                    dim_model=hidden_dim,
-                    nheads=8,
-                    dim_feedforward=hidden_dim * 4,
-                    nlayers=num_layers,
-                    dropout=0.1,
-                    batch_first=True,
-                    masking_p=0.0,  # No masking for fine-tuning
-                    n_tokens=1000,  # Will be adjusted based on actual vocabulary
-                    context_length=512,  # Adjust based on your data
-                    lr=1e-4,
-                    warmup=1000,
-                    batch_size=32,
-                    max_epochs=10
-                )
-                backbone = nicheformer_model.encoder
-                self._nicheformer_embeddings = nicheformer_model.embeddings
-                self._nicheformer_pos_embedding = nicheformer_model.positional_embedding
-                self._nicheformer_dropout = getattr(nicheformer_model, 'dropout', None)
-                self._nicheformer_pos = getattr(nicheformer_model, 'pos', None)
-                self._using_nicheformer = True
-                print("Created new Nicheformer model")
-                return backbone
-                
-        except ImportError:
-            # Nicheformer not available, use placeholder
-            print("Nicheformer package not available. Using placeholder backbone.")
-            print("To use actual Nicheformer:")
-            print("  1. Install from: https://github.com/theislab/nicheformer/")
-            print("  2. Download pretrained weights from Mendeley Data")
-            print("  3. Provide pretrained_path when creating model")
-            self._using_nicheformer = False
-            return self._create_placeholder_backbone(input_dim, hidden_dim, num_layers)
+                return nf.encoder, True
+
+            # No checkpoint: create a fresh Nicheformer (still uses its encoder)
+            print("Creating new Nicheformer model (no pretrained weights)")
+            nf = Nicheformer(
+                dim_model=hidden_dim,
+                nheads=8,
+                dim_feedforward=hidden_dim * 4,
+                nlayers=num_layers,
+                dropout=0.1,
+                batch_first=True,
+                masking_p=0.0,
+                n_tokens=1000,
+                context_length=512,
+                lr=1e-4,
+                warmup=1000,
+                batch_size=32,
+                max_epochs=10,
+            )
+            print("Created new Nicheformer model")
+            return nf.encoder, True
+
         except Exception as e:
-            # Error loading Nicheformer, fall back to placeholder
-            print(f"Error loading Nicheformer: {e}")
-            print("Falling back to placeholder backbone.")
-            self._using_nicheformer = False
-            return self._create_placeholder_backbone(input_dim, hidden_dim, num_layers)
-    
-    def _create_placeholder_backbone(self, input_dim: int, hidden_dim: int, num_layers: int) -> nn.Module:
-        """
-        Create a simple transformer encoder as placeholder for Nicheformer.
-        
-        This is a minimal implementation for testing. In production, this should
-        be replaced with the actual Nicheformer model from:
-        https://github.com/theislab/nicheformer/
-        """
-        encoder_layer = nn.TransformerEncoderLayer(
+            # If nicheformer not installed OR loading fails, use placeholder.
+            print(f"Nicheformer backbone unavailable ({e}). Using placeholder backbone.")
+            return self._create_placeholder_backbone(hidden_dim=hidden_dim, num_layers=num_layers), False
+
+    def _create_placeholder_backbone(self, hidden_dim: int, num_layers: int) -> nn.Module:
+        enc_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=8,
             dim_feedforward=hidden_dim * 4,
             dropout=0.1,
-            batch_first=True
+            batch_first=True,
         )
-        
-        # Project input to hidden dimension
-        self.input_projection = nn.Linear(input_dim, hidden_dim)
-        
-        return nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-    
-    def _configure_fine_tuning(self):
+        return nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+
+    def _infer_backbone_dim(self, backbone: nn.Module, default: int) -> int:
         """
-        Configure which parameters are trainable based on fine_tune_mode.
-        
-        - head_only: Only classifier head is trainable
-        - partial: Last N layers of backbone + head are trainable
-        - full: All parameters are trainable
+        Best-effort extraction of embedding dimension from a transformer encoder.
         """
+        # Common patterns:
+        # - backbone.layers[0].self_attn.embed_dim  (nn.TransformerEncoder)
+        if hasattr(backbone, "layers") and len(getattr(backbone, "layers")) > 0:
+            layer0 = backbone.layers[0]
+            if hasattr(layer0, "self_attn") and hasattr(layer0.self_attn, "embed_dim"):
+                return int(layer0.self_attn.embed_dim)
+
+        # Some models store d_model / dim_model
+        for attr in ("d_model", "dim_model", "model_dim", "hidden_size"):
+            if hasattr(backbone, attr):
+                val = getattr(backbone, attr)
+                if isinstance(val, int):
+                    return val
+
+        return int(default)
+
+    # -------------------------
+    # Fine-tuning configuration
+    # -------------------------
+
+    def _configure_fine_tuning(self) -> None:
+        """
+        head_only:
+          - freeze backbone
+          - train adapter + classifier
+        partial:
+          - unfreeze last half of backbone layers (if available)
+          - train adapter + classifier
+        full:
+          - train everything
+        """
+        # First freeze everything
+        for p in self.parameters():
+            p.requires_grad = False
+
+        # Adapter + classifier always trainable (otherwise you're not learning a mapping into the backbone space)
+        for p in self.input_adapter.parameters():
+            p.requires_grad = True
+        for p in self.classifier.parameters():
+            p.requires_grad = True
+        for p in self.post_backbone_norm.parameters():
+            p.requires_grad = True
+
         if self.fine_tune_mode == "head_only":
-            # Freeze backbone
-            for param in self.backbone.parameters():
-                param.requires_grad = False
-            # Unfreeze classifier
-            for param in self.classifier.parameters():
-                param.requires_grad = True
-                
-        elif self.fine_tune_mode == "partial":
-            # Freeze early layers, unfreeze later layers
-            if hasattr(self.backbone, 'layers'):
-                # If backbone has layers attribute
-                num_layers = len(self.backbone.layers)
-                for i, layer in enumerate(self.backbone.layers):
-                    if i < num_layers // 2:
-                        # Freeze first half
-                        for param in layer.parameters():
-                            param.requires_grad = False
-                    else:
-                        # Unfreeze second half
-                        for param in layer.parameters():
-                            param.requires_grad = True
-            # Always unfreeze classifier
-            for param in self.classifier.parameters():
-                param.requires_grad = True
-                
-        elif self.fine_tune_mode == "full":
-            # Unfreeze everything
-            for param in self.parameters():
-                param.requires_grad = True
-        else:
-            raise ValueError(f"Unknown fine_tune_mode: {self.fine_tune_mode}. Must be 'head_only', 'partial', or 'full'")
-    
+            # Backbone stays frozen
+            return
+
+        if self.fine_tune_mode == "partial":
+            # Unfreeze later layers if backbone exposes .layers
+            if hasattr(self.backbone, "layers") and len(getattr(self.backbone, "layers")) > 0:
+                layers = list(self.backbone.layers)
+                n = len(layers)
+                start = n // 2
+                for i in range(start, n):
+                    for p in layers[i].parameters():
+                        p.requires_grad = True
+            else:
+                # If we can't identify layers, unfreeze whole backbone (still stabilized by LR mult + clipping)
+                for p in self.backbone.parameters():
+                    p.requires_grad = True
+            return
+
+        if self.fine_tune_mode == "full":
+            for p in self.backbone.parameters():
+                p.requires_grad = True
+            return
+
+        raise ValueError("fine_tune_mode must be one of: head_only, partial, full")
+
+    # -------------------------
+    # Optimizer helpers
+    # -------------------------
+
+    def parameter_groups(self, base_lr: float, weight_decay: float) -> List[Dict]:
+        """
+        Return optimizer param groups:
+          - adapter/head at base_lr
+          - backbone at base_lr * backbone_lr_mult (if trainable)
+        """
+        groups: List[Dict] = []
+
+        head_params = []
+        for m in (self.input_adapter, self.post_backbone_norm, self.classifier):
+            head_params.extend([p for p in m.parameters() if p.requires_grad])
+
+        if head_params:
+            groups.append({"params": head_params, "lr": base_lr, "weight_decay": weight_decay})
+
+        backbone_params = [p for p in self.backbone.parameters() if p.requires_grad]
+        if backbone_params:
+            groups.append(
+                {"params": backbone_params, "lr": base_lr * float(self.backbone_lr_mult), "weight_decay": weight_decay}
+            )
+
+        return groups
+
+    # -------------------------
+    # Forward / loss / contract
+    # -------------------------
+
+    def _run_backbone(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Run backbone with some signature flexibility.
+        x is (B, S, D)
+        """
+        # Try the simplest first
+        try:
+            return self.backbone(x)
+        except TypeError:
+            pass
+
+        # Try is_causal=False (some implementations accept it)
+        try:
+            return self.backbone(x, is_causal=False)
+        except TypeError:
+            pass
+
+        # Fallback: try passing a None mask
+        try:
+            return self.backbone(x, src_key_padding_mask=None)
+        except TypeError as e:
+            raise RuntimeError(f"Backbone forward signature not supported. Original error: {e}")
+
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        Forward pass through the model.
-        
-        Args:
-            batch: Dictionary containing:
-                - 'features': Tensor of shape (batch_size, num_genes + 2) if include_spatial
-                  or (batch_size, num_genes) otherwise
-                - 'label': Tensor of shape (batch_size,) - not used in forward, only for loss
-        
-        Returns:
-            logits: Tensor of shape (batch_size, num_labels)
-        """
-        features = batch['features']  # (batch_size, input_dim)
-        
-        if self._using_nicheformer:
-            # Using actual Nicheformer backbone
-            # Nicheformer expects tokenized input, but we have continuous features
-            # Project to hidden dimension and treat as sequence
-            if hasattr(self, 'input_projection'):
-                x = self.input_projection(features)  # (batch_size, hidden_dim)
-            else:
-                # Create projection if not exists
-                if not hasattr(self, '_temp_projection'):
-                    self._temp_projection = nn.Linear(features.shape[1], self.backbone.layers[0].self_attn.embed_dim).to(features.device)
-                x = self._temp_projection(features)
-            
-            # Add sequence dimension for transformer (treat each cell as a sequence of length 1)
-            x = x.unsqueeze(1)  # (batch_size, 1, hidden_dim)
-            
-            # Pass through Nicheformer encoder
-            # Nicheformer encoder expects (batch, seq_len, hidden_dim) and optional mask
-            x = self.backbone(x, is_causal=False)  # (batch_size, 1, hidden_dim)
-            
-            # Remove sequence dimension
-            x = x.squeeze(1)  # (batch_size, hidden_dim)
-        else:
-            # Using placeholder backbone
-            # Project input to hidden dimension
-            if hasattr(self, 'input_projection'):
-                x = self.input_projection(features)  # (batch_size, hidden_dim)
-            else:
-                x = features
-            
-            # Add sequence dimension for transformer (treat each cell as a sequence of length 1)
-            x = x.unsqueeze(1)  # (batch_size, 1, hidden_dim)
-            
-            # Pass through backbone
-            x = self.backbone(x)  # (batch_size, 1, hidden_dim)
-            
-            # Remove sequence dimension
-            x = x.squeeze(1)  # (batch_size, hidden_dim)
-        
-        # Classification head
-        logits = self.classifier(x)  # (batch_size, num_labels)
-        
+        features = batch["features"]  # (B, input_dim)
+
+        # Basic spatial scaling to avoid huge coords dominating
+        if self.include_spatial and features.shape[1] == self.num_genes + 2 and self.spatial_scale is not None:
+            genes = features[:, : self.num_genes]
+            coords = features[:, self.num_genes :]
+            coords = coords / float(self.spatial_scale)
+            features = torch.cat([genes, coords], dim=1)
+
+        # Adapt into backbone embedding space
+        x = self.input_adapter(features)  # (B, D)
+
+        # Treat each cell as a "sequence" of length 1
+        x = x.unsqueeze(1)  # (B, 1, D)
+
+        # Backbone
+        x = self._run_backbone(x)  # (B, 1, D) in most encoder implementations
+
+        # Pool + norm
+        x = x.mean(dim=1)  # (B, D)
+        x = self.post_backbone_norm(x)
+
+        # Classifier
+        logits = self.classifier(x)  # (B, num_labels)
         return logits
-    
+
     def compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """
-        Compute classification loss.
-        
-        Args:
-            logits: Model output logits, shape (batch_size, num_labels)
-            labels: Ground truth labels, shape (batch_size,)
-            
-        Returns:
-            loss: Scalar loss value
-        """
         return self.criterion(logits, labels)
-    
+
     def get_weights(self) -> Dict[str, torch.Tensor]:
-        """
-        Get model state dictionary for federated aggregation.
-        
-        Returns:
-            state_dict: Dictionary mapping parameter names to tensors
-        """
         return self.state_dict()
-    
+
     def set_weights(self, state_dict: Dict[str, torch.Tensor]):
-        """
-        Set model weights from state dictionary (used in federated learning).
-        
-        Args:
-            state_dict: Dictionary mapping parameter names to tensors
-        """
         self.load_state_dict(state_dict, strict=False)
-    
+
     def get_trainable_parameters(self) -> List[torch.nn.Parameter]:
-        """
-        Get list of trainable parameters (useful for optimizer setup).
-        
-        Returns:
-            List of parameters that require gradients
-        """
         return [p for p in self.parameters() if p.requires_grad]
-    
+
     def count_parameters(self) -> Tuple[int, int]:
-        """
-        Count total and trainable parameters.
-        
-        Returns:
-            (total_params, trainable_params)
-        """
         total = sum(p.numel() for p in self.parameters())
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return total, trainable
@@ -337,27 +329,13 @@ def create_model(
     pretrained_path: Optional[str] = None,
     fine_tune_mode: str = "head_only",
     include_spatial: bool = True,
-    **kwargs
+    **kwargs,
 ) -> NicheformerWrapper:
-    """
-    Factory function to create a NicheformerWrapper model.
-    
-    Args:
-        num_genes: Number of input genes
-        num_labels: Number of output classes
-        pretrained_path: Path to pretrained weights
-        fine_tune_mode: Fine-tuning mode ("head_only", "partial", "full")
-        include_spatial: Whether to include spatial coordinates
-        **kwargs: Additional arguments passed to NicheformerWrapper
-        
-    Returns:
-        Initialized NicheformerWrapper model
-    """
     return NicheformerWrapper(
         num_genes=num_genes,
         num_labels=num_labels,
         pretrained_path=pretrained_path,
         fine_tune_mode=fine_tune_mode,
         include_spatial=include_spatial,
-        **kwargs
+        **kwargs,
     )
