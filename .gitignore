@@ -11,6 +11,7 @@ wheels/
 .venv
 env/
 ENV/
+venv/
 
 # Data files (too large for git)
 data/raw/*.h5ad
