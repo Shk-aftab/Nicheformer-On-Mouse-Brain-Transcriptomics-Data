@@ -14,6 +14,34 @@ Here is the documentation formatted in clean, professional Markdown, ready to be
 
 This document details the process for running **centralized fine-tuning** using the official NicheFormer model implementation with pretrained checkpoints. It covers the setup environment, how to handle pretrained weights, execution commands, and specific improvements made to the shared integration code (model wrapper).
 
+## Milestone 2 Processed Dataset (Recommended)
+
+To ensure everyone trains/evaluates on the **exact same processed data**, use the shared Milestone 2 processed dataset instead of regenerating it locally.
+
+### Steps
+1. **Download** the processed dataset from Drive  
+   (https://drive.google.com/file/d/1cPzEAUFvLVdi0_cgKTXQl1WPJSqADda4/view?usp=sharing)
+
+2. **Unzip** the archive into:
+```
+
+data/processed/
+
+```
+
+3. Verify the final structure looks like this:
+```
+
+data/processed/clients/client_01/...
+data/processed/clients/client_02/...
+data/processed/clients/client_03/...
+
+```
+
+### Important
+- **Do not rerun preprocessing** unless you intentionally want to regenerate the dataset/splits and accept that results may differ.
+```
+
 ---
 
 ## 2. Setup & Installation
