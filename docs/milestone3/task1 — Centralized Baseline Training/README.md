@@ -22,20 +22,50 @@ This document details the process for running **centralized fine-tuning** using 
 
 To ensure compatibility, a separate environment was created for the "real" NicheFormer integration.
 
+````md
 1. **Create and activate environment:**
 ```bash
-conda create -n nicheformer_real python=3.9
+conda create -n nicheformer_real python=3.9 -y
 conda activate nicheformer_real
+````
 
+2. **Clone the NicheFormer repository:**
+   From the root of this project (example path shown below), clone the official repo:
+
+```bash
+cd D:\uhh_project_biostats-master_new\uhh_project_biostats-master
+git clone https://github.com/theislab/nicheformer.git
+cd nicheformer
 ```
 
+3. **Install NicheFormer + dependencies:**
+   Install repo dependencies (if present) and then install NicheFormer into the environment:
 
-2. **Verify NicheFormer Installation:**
-Run the following command to confirm the package is importable:
+```bash
+# If requirements.txt exists
+pip install -r requirements.txt
+
+# Install the package (editable)
+pip install -e .
+```
+
+> If the repo provides `environment.yml` instead of `requirements.txt`, use:
+
+```bash
+conda env update -n nicheformer_real -f environment.yml
+```
+
+4. **Verify NicheFormer installation:**
+   Run the following command to confirm the package is importable:
+
 ```bash
 python -c "import nicheformer; print('nicheformer import OK'); print('version:', getattr(nicheformer,'__version__','unknown'))"
+```
 
 ```
+::contentReference[oaicite:0]{index=0}
+```
+
 
 
 
