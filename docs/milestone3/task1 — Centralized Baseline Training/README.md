@@ -170,7 +170,7 @@ The recommended configuration for actual training results.
 ```bash
 python scripts/run_centralized.py \
   --data_dir data/processed \
-  --output_dir results/centralized_pretrained_full \
+  --output_dir results/centralized \
   --epochs 5 \
   --batch_size 128 \
   --lr 1e-4 \
