@@ -30,10 +30,10 @@ conda activate nicheformer_real
 ````
 
 2. **Clone the NicheFormer repository:**
-   From the root of this project (example path shown below), clone the official repo:
+   From the root of this project, clone the official repo:
 
 ```bash
-cd D:\uhh_project_biostats-master_new\uhh_project_biostats-master
+
 git clone https://github.com/theislab/nicheformer.git
 cd nicheformer
 ```
@@ -134,8 +134,8 @@ The centralized training script manages the end-to-end workflow for non-federate
 | --- | --- | --- |
 | `--data_dir` | Directory containing Milestone 2 processed data | `data/processed` |
 | `--output_dir` | Directory to save results and artifacts | N/A |
-| `--device` | Compute device (`cpu` or `cuda`) | `cpu` |
-| `--epochs` | Number of training epochs | `10` |
+| `--device` | Compute device (`cpu` or `cuda`) | `cuda` |
+| `--epochs` | Number of training epochs | `5` |
 | `--batch_size` | Training batch size | `128` |
 | `--lr` | Learning rate | `1e-4` |
 | `--fine_tune_mode` | Strategy: `head_only`, `partial`, or `full` | `head_only` |
